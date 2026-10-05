@@ -1,0 +1,278 @@
+import { useEffect, useRef, useState } from "react";
+import {
+  KeyboardAvoidingView,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+import { Essence, type Mood } from "@/components/essence";
+import {
+  type ChatTurn,
+  type FeedbackRequest,
+  MAX_HABIT_LENGTH,
+  MODEL_IDS,
+  type ModelId,
+  type Rating,
+  type SplitRequest,
+  type SplitResponse,
+  type SplitResult,
+} from "@/shared/tiny-habit";
+
+// Test lab: a chat with the AI, only for testing and collecting data.
+// Every answer can be rated; answers and ratings land in data/log.jsonl.
+
+type Entry =
+  | { id: string; role: "user"; text: string }
+  | { id: string; role: "assistant"; result: SplitResult; rating?: Rating };
+
+const LISTENING_PAUSE_MS = 1200; // after this long without typing, Buddy relaxes again
+const SPEAKING_MS = 1600; // how long the "answer arrived" bloom lasts
+
+const MODEL_LABEL: Record<ModelId, string> = { claude: "Claude", gemma: "Gemma" };
+
+export default function Lab() {
+  const [entries, setEntries] = useState<Entry[]>([]);
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [mood, setMood] = useState<Mood>("idle");
+  // One model per conversation: switching mid-chat would mix two models'
+  // answers in one conversation and make the data useless for comparing them.
+  const [model, setModel] = useState<ModelId>("claude");
+  const modelLocked = entries.length > 0;
+  const typingTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const scroll = useRef<ScrollView>(null);
+
+  // The bloom is short; afterwards Buddy goes back to breathing.
+  useEffect(() => {
+    if (mood !== "speaking") return;
+    const timer = setTimeout(() => setMood("idle"), SPEAKING_MS);
+    return () => clearTimeout(timer);
+  }, [mood]);
+
+  function onType(text: string) {
+    setDraft(text);
+    if (sending) return;
+    setMood("listening");
+    clearTimeout(typingTimer.current);
+    typingTimer.current = setTimeout(() => setMood("idle"), LISTENING_PAUSE_MS);
+  }
+
+  async function send() {
+    const text = draft.trim();
+    if (text === "" || sending) return;
+
+    const next: Entry[] = [...entries, { id: `u${entries.length}`, role: "user", text }];
+    setEntries(next);
+    setDraft("");
+    setSending(true);
+    clearTimeout(typingTimer.current);
+    setMood("thinking");
+
+    const response = await postSplit({ model, turns: next.map(toTurn) }).catch((error) => {
+      setMood("idle");
+      setSending(false);
+      throw error;
+    });
+
+    setEntries([...next, { id: response.exchangeId, role: "assistant", result: response.result }]);
+    setSending(false);
+    setMood("speaking");
+  }
+
+  async function rate(exchangeId: string, rating: Rating) {
+    await postFeedback({ exchangeId, rating });
+    setEntries((current) =>
+      current.map((e) => (e.role === "assistant" && e.id === exchangeId ? { ...e, rating } : e)),
+    );
+  }
+
+  function startOver() {
+    setEntries([]);
+    setDraft("");
+    setMood("idle");
+  }
+
+  return (
+    <SafeAreaView style={styles.screen}>
+      <KeyboardAvoidingView style={styles.screen} behavior="padding">
+        <View style={styles.topBar}>
+          <Text style={styles.title}>Test lab</Text>
+          <View style={[styles.modelSwitch, modelLocked && styles.modelSwitchLocked]}>
+            {MODEL_IDS.map((id) => (
+              <Pressable
+                key={id}
+                onPress={() => setModel(id)}
+                disabled={modelLocked}
+                style={[styles.modelOption, model === id && styles.modelOptionActive]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: model === id, disabled: modelLocked }}
+              >
+                <Text style={[styles.modelLabel, model === id && styles.modelLabelActive]}>
+                  {MODEL_LABEL[id]}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Pressable onPress={startOver} disabled={sending} hitSlop={12}>
+            <Text style={styles.topAction}>New chat</Text>
+          </Pressable>
+        </View>
+
+        <Essence mood={mood} />
+
+        <ScrollView
+          ref={scroll}
+          style={styles.messages}
+          contentContainerStyle={styles.messagesContent}
+          onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: true })}
+        >
+          {entries.length === 0 && (
+            <Text style={styles.hint}>What do you want to do more of?</Text>
+          )}
+          {entries.map((entry) =>
+            entry.role === "user" ? (
+              <Text key={entry.id} style={[styles.bubble, styles.userBubble]}>
+                {entry.text}
+              </Text>
+            ) : (
+              <AssistantMessage key={entry.id} entry={entry} onRate={rate} />
+            ),
+          )}
+        </ScrollView>
+
+        <View style={styles.inputBar}>
+          <TextInput
+            style={styles.input}
+            value={draft}
+            onChangeText={onType}
+            placeholder="Write to Buddy…"
+            maxLength={MAX_HABIT_LENGTH}
+            multiline
+          />
+          <Pressable
+            style={[styles.send, (draft.trim() === "" || sending) && styles.sendDisabled]}
+            onPress={send}
+            disabled={draft.trim() === "" || sending}
+          >
+            <Text style={styles.sendLabel}>Send</Text>
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+function AssistantMessage({
+  entry,
+  onRate,
+}: {
+  entry: Extract<Entry, { role: "assistant" }>;
+  onRate: (exchangeId: string, rating: Rating) => void;
+}) {
+  const { result } = entry;
+
+  return (
+    <View style={styles.assistant}>
+      {"tinyHabits" in result ? (
+        <>
+          {result.tinyHabits.map((habit, index) => (
+            <View key={index} style={styles.card}>
+              <Text style={styles.anchor}>{habit.anchor},</Text>
+              <Text style={styles.behavior}>{habit.behavior}.</Text>
+              <Text style={styles.why}>{habit.why}</Text>
+            </View>
+          ))}
+          {/* Support note for harmful habits (rules A1–A3), e.g. the Rauchstopplinie */}
+          {result.note !== "" && <Text style={styles.note}>{result.note}</Text>}
+        </>
+      ) : (
+        <Text style={[styles.bubble, styles.assistantBubble]}>{result.message}</Text>
+      )}
+
+      <View style={styles.rating}>
+        {(["helpful", "not_helpful"] as const).map((rating) => (
+          <Pressable
+            key={rating}
+            onPress={() => onRate(entry.id, rating)}
+            disabled={entry.rating !== undefined}
+            style={[styles.rateButton, entry.rating === rating && styles.rateSelected]}
+          >
+            <Text style={styles.rateLabel}>{rating === "helpful" ? "Helpful" : "Not helpful"}</Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+// ---- talking to our server ----
+
+function toTurn(entry: Entry): ChatTurn {
+  return entry.role === "user"
+    ? { role: "user", text: entry.text }
+    : { role: "assistant", result: entry.result };
+}
+
+async function postSplit(body: SplitRequest): Promise<SplitResponse> {
+  const response = await fetch("/api/split", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`/api/split failed (${response.status}): ${await response.text()}`);
+  }
+  return response.json();
+}
+
+async function postFeedback(body: FeedbackRequest) {
+  const response = await fetch("/api/feedback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`/api/feedback failed (${response.status}): ${await response.text()}`);
+  }
+}
+
+const GREEN = "#1F6F5C";
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: "#FAFAF7" },
+  topBar: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 20, paddingTop: 8 },
+  title: { fontSize: 18, fontWeight: "600" },
+  modelSwitch: { flexDirection: "row", borderRadius: 999, borderWidth: 1, borderColor: "#C9CFCC", padding: 2 },
+  modelSwitchLocked: { opacity: 0.5 },
+  modelOption: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 999 },
+  modelOptionActive: { backgroundColor: GREEN },
+  modelLabel: { fontSize: 14 },
+  modelLabelActive: { color: "#FFFFFF", fontWeight: "600" },
+  topAction: { fontSize: 16, color: GREEN, fontWeight: "600" },
+  messages: { flex: 1 },
+  messagesContent: { padding: 16, gap: 12 },
+  hint: { textAlign: "center", fontSize: 18, opacity: 0.6, marginTop: 8 },
+  bubble: { padding: 12, borderRadius: 16, fontSize: 16, lineHeight: 22, maxWidth: "85%" },
+  userBubble: { alignSelf: "flex-end", backgroundColor: GREEN, color: "#FFFFFF" },
+  assistantBubble: { alignSelf: "flex-start", backgroundColor: "#ECEFEA" },
+  assistant: { gap: 8, alignItems: "flex-start" },
+  card: { backgroundColor: "#FFFFFF", borderRadius: 16, padding: 16, gap: 4, borderWidth: 1, borderColor: "#E1E6E2", maxWidth: "90%" },
+  anchor: { fontSize: 15, opacity: 0.7 },
+  behavior: { fontSize: 18, fontWeight: "600" },
+  why: { fontSize: 14, opacity: 0.6, marginTop: 6 },
+  note: { fontSize: 14, lineHeight: 20, maxWidth: "90%", paddingHorizontal: 4 },
+  rating: { flexDirection: "row", gap: 8 },
+  rateButton: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: "#C9CFCC", minHeight: 44, justifyContent: "center" },
+  rateSelected: { backgroundColor: "#DDEEE7", borderColor: GREEN },
+  rateLabel: { fontSize: 14 },
+  inputBar: { flexDirection: "row", alignItems: "flex-end", gap: 8, padding: 12, borderTopWidth: 1, borderColor: "#E1E6E2" },
+  input: { flex: 1, maxHeight: 120, borderWidth: 1, borderColor: "#C9CFCC", borderRadius: 20, paddingHorizontal: 16, paddingVertical: 10, fontSize: 16, backgroundColor: "#FFFFFF" },
+  send: { backgroundColor: GREEN, borderRadius: 20, paddingHorizontal: 18, height: 44, justifyContent: "center" },
+  sendDisabled: { opacity: 0.4 },
+  sendLabel: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
+});
