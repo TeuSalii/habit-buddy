@@ -1,56 +1,110 @@
-# Welcome to your Expo app 👋
+# Happy Habits Buddy
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A phone app that helps a person build small, more sustainable food habits.
 
-## Get started
+It is not a chatbot. The person puts the food moments of their day on a map (breakfast, shopping, cooking and so on), and the AI companion **Buddy** offers one tiny habit for one of those moments.
 
-1. Install dependencies
+This is a research prototype. It runs on a developer's computer and a test phone, not in an app store.
+
+## Purpose
+
+Most intentions fail for two reasons: they are too big, and they have no place in the day. Buddy works on both.
+
+- **Tiny:** one small action that costs nothing and needs nothing new.
+- **Anchored:** the action belongs to a moment that already happens, for example "after dinner at home".
+- **The person's own choice:** they pick the area they want to work on and can answer in their own words. Buddy never suggests a food the person does not eat.
+- **Money and waste first:** the app leads with throwing less food away and saving money. Sustainability is the effect, not the sales pitch.
+
+Buddy is not a diet app, a therapist or a doctor. It never talks about eating less, calories or weight.
+
+The project has a second purpose: comparing two AI models on the same task. Claude (in the cloud) and Gemma (on the developer's own computer) get the same rules and must answer in the same format.
+
+## What you need
+
+| What | Why | Needed for |
+| --- | --- | --- |
+| [Node.js](https://nodejs.org) with npm | Runs the development server on your computer | Everything |
+| [Expo Go](https://expo.dev/go) on an Android phone | Shows the app on the phone, without building or installing it | Using the app |
+| Phone and computer on the same Wi-Fi | The phone loads the app from your computer | Using the app |
+| An Anthropic API key | Buddy's offers in the app are written by Claude | Using the app |
+| [Ollama](https://ollama.com) with the model `gemma4:12b` | Runs Gemma on your computer, so nothing leaves the machine | Only the developer lab with Gemma, and `npm run eval` |
+
+The app itself works without Ollama and Gemma. They are needed only when you compare the models.
+
+## Run it
+
+1. Install the packages:
 
    ```bash
    npm install
    ```
 
-2. Start the app
+2. Create a file named `.env.local` in the project folder with your key. Git ignores this file, so the key stays on your computer.
+
+   ```
+   ANTHROPIC_API_KEY=your-key
+   ```
+
+3. Start the development server:
 
    ```bash
    npx expo start
    ```
 
-In the output, you'll find options to open the app in a
+4. Open Expo Go on the phone and scan the QR code from the terminal.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+For Gemma, install Ollama, download the model once and keep the Ollama app running:
 
 ```bash
-npm run reset-project
+ollama pull gemma4:12b
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## How it works
 
-### Other setup steps
+### For the person
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+1. **Introduction.** A short statement about habits, one quiz question with the answer shown as bars, the choice of an area (for example "Throwing less away" or "How I shop"), and one question about the person.
+2. **Day map.** The person adds a food moment by answering up to four questions, one at a time: what, when, where, and on which days.
+3. **Buddy's offer.** Right after a moment is added, Buddy offers one tiny habit for it. The person can accept it, ask for another idea, or decline.
+4. **Check-offs.** An accepted habit becomes a plan with one box per day.
+5. **"You are here" card.** The person can take another quiz at any time, and see, correct or delete what Buddy knows about them.
 
-## Learn more
+Buddy offers by itself only while fewer than two changes are open. Starting many habits at once is how none of them sticks.
 
-To learn more about developing your project with Expo, look at the following resources:
+### Under the hood
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+```
+Phone (Expo Go)  →  API routes on your computer  →  rule sheet + model  →  offer  →  phone
+```
 
-## Join the community
+- **The app and its server are one project.** The screens run on the phone. The files in `src/app/api/` run on your computer, inside the Expo development server. The API key never reaches the phone.
+- **The rule sheet decides how Buddy answers.** It is plain Markdown in `rules/`: behavior science, voice, guardrails and the rules for food offers. The files are read on every request, so an edit takes effect without a restart.
+- **Two models, one contract.** Claude and Gemma receive the same rules and must reply in the same JSON shape. The app uses Claude. The developer lab can switch between them.
+- **The data stays on the phone.** Moments, answers and check-offs are stored on the device. There is no account. Several test persons can share one phone, and switching between them never deletes anything.
+- **A log on your computer.** Every offer and check-off is written to `data/log.jsonl` with a random ID instead of a name. Git ignores the `data/` folder.
+- **Developer lab.** A screen for the team, not for users. You describe a situation, the model makes three suggestions, and you approve the right one. Approved offers are saved in `rules/approved-offers.jsonl` and shown to the models as examples with every later request. The models do not learn by themselves.
 
-Join our community of developers creating universal apps.
+## Project layout
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+| Folder | Content |
+| --- | --- |
+| `rules/` | The rule sheet (design material) |
+| `src/app/` | Screens, and the API routes in `src/app/api/` |
+| `src/components/` | The parts the screens are built from |
+| `src/content/` | Quiz questions and the questions about the person |
+| `src/server/` | Code that runs only on the computer: models, rule sheet, log |
+| `src/shared/` | The contract between the app and the server |
+| `src/storage/` | What the app saves on the phone |
+| `tests/` | Test cases and reports of the model comparison |
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `npx expo start` | Starts the development server |
+| `npx tsc --noEmit` | Checks the TypeScript types |
+| `npm run eval` | Sends every case in `tests/cases.md` to both models and writes a side-by-side report to `tests/results/` |
+
+## Built with
+
+Expo, React Native and TypeScript.
