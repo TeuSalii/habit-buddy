@@ -1,4 +1,4 @@
-# Happy Habits Buddy
+# Happy Habits Buddy (Food habits)
 
 A phone app that helps a person build small, more sustainable food habits.
 
