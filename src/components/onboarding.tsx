@@ -1,13 +1,17 @@
 import { useState } from "react";
-import { ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import Animated, { FadeInRight } from "react-native-reanimated";
 
+import { MAX_OPEN_CHANGES } from "@/client/ask-buddy";
+import { AnswerForm } from "@/components/answer-form";
 import { Essence } from "@/components/essence";
+import { KIND_ICON, KIND_LABEL, PLACE_LABEL, describeDays } from "@/components/food-moment-labels";
 import { PressScale } from "@/components/press-scale";
 import { Quiz } from "@/components/quiz";
-import { pickQuiz } from "@/content/quiz-questions";
-import { SELF_QUESTIONS, TOPICS } from "@/content/self-questions";
-import { type FoodArea, type FoodProfile, MAX_ANSWER_LENGTH } from "@/shared/offer";
+import { ideaFrom, pickQuiz } from "@/content/quiz-questions";
+import { SELF_QUESTIONS, type SelfQuestion, TOPICS } from "@/content/self-questions";
+import type { FoodMoment } from "@/shared/food-moment";
+import type { FoodArea, FoodProfile } from "@/shared/offer";
 
 // The quiz and the questions about the person. It runs in two ways:
 //
@@ -17,8 +21,11 @@ import { type FoodArea, type FoodProfile, MAX_ANSWER_LENGTH } from "@/shared/off
 //   the first food moment (bridge).
 //
 // "again": opened from the day map whenever the person likes. It starts at
-//   the quiz, and it can end right there: it may be just for fun. Telling
-//   Buddy more is an offer, and it never leads into a new plan by itself.
+//   the quiz, and it can end right there: it may be just for fun. From there
+//   two ways lead on, and both end at the same step (use), where Buddy does
+//   something with it: the person picks a moment and gets one small idea.
+//   - The quiz question itself, if a habit can be built on it.
+//   - Telling Buddy more: a topic, and one more question about themselves.
 //
 // Knowing a fact does not change a habit, so the facts are only the way in.
 // What carries a change is the person's own reason: that is why they choose
@@ -28,31 +35,51 @@ type Props = {
   mode: "first" | "again";
   seenQuizIds: string[];
   onQuizSeen: (id: string) => void;
-  onFinish: (about: FoodProfile) => void; // the person told Buddy something
-  onClose: () => void; // skipped, or done without telling more
+  about: FoodProfile | null; // what Buddy knows so far
+  // "again" only: the moments where Buddy could suggest something now, and
+  // how many changes are open already.
+  freeMoments: FoodMoment[];
+  openChanges: number;
+  onTell: (told: FoodProfile) => void; // the person told Buddy something
+  // The person wants an idea: at this moment or at a new one. `focus` is the
+  // theme of the quiz question, or null.
+  onIdea: (where: FoodMoment | "new", focus: string | null) => void;
+  onClose: () => void; // skipped, or enough for today
 };
 
-type Step = "statement" | "guess" | "topic" | "you" | "bridge" | "done";
+type Step = "statement" | "guess" | "topic" | "you" | "bridge" | "use";
 
 const FLOW: Record<Props["mode"], Step[]> = {
   first: ["statement", "guess", "topic", "you", "bridge"],
-  again: ["guess", "topic", "you", "done"],
+  again: ["guess", "topic", "you", "use"],
 };
 
-export function Onboarding({ mode, seenQuizIds, onQuizSeen, onFinish, onClose }: Props) {
+export function Onboarding(props: Props) {
+  const { mode, seenQuizIds, onQuizSeen, about, freeMoments, openChanges, onTell, onIdea, onClose } = props;
   const steps = FLOW[mode];
-  const [step, setStep] = useState<Step>(steps[0]);
+  // The steps taken so far. "Back" drops the last one, so it always returns
+  // to where the person came from, also when a step was jumped over.
+  const [trail, setTrail] = useState<Step[]>([steps[0]]);
+  const step = trail[trail.length - 1];
   const position = steps.indexOf(step);
+  const go = (next: Step) => setTrail([...trail, next]);
 
   // One question the person has not seen yet, picked once when this opens.
   const [quiz] = useState(() => pickQuiz(seenQuizIds));
   const [guess, setGuess] = useState<string | number | null>(null);
+  // The theme of the quiz question, if Buddy can build a habit on it for
+  // this person. Set as the focus when they ask for an idea from the quiz.
+  const idea = ideaFrom(quiz, about);
+  const [focus, setFocus] = useState<string | null>(null);
 
   const [area, setArea] = useState<FoodArea | null>(null);
-  // The answer about themselves: an option they tapped, or their own words.
-  const [picked, setPicked] = useState<string | null>(null);
-  const [ownWords, setOwnWords] = useState("");
-  const answer = ownWords.trim() !== "" ? ownWords.trim() : picked;
+  // The question being asked. null: the topic has no open question.
+  const [asking, setAsking] = useState<SelfQuestion | null>(null);
+
+  // What the person answered to this question earlier, or null.
+  function known(question: SelfQuestion): string | null {
+    return about?.answers.find((each) => each.question === question.question)?.answer ?? null;
+  }
 
   function makeGuess(value: string | number) {
     setGuess(value);
@@ -60,22 +87,32 @@ export function Onboarding({ mode, seenQuizIds, onQuizSeen, onFinish, onClose }:
   }
 
   function chooseArea(next: FoodArea) {
-    // A new topic has a new question, so the old answer no longer belongs.
     setArea(next);
-    setPicked(null);
-    setOwnWords("");
-    setStep("you");
+    // One question per visit: the first one without an answer.
+    setAsking(next === "not_sure" ? null : (SELF_QUESTIONS[next].find((each) => known(each) === null) ?? null));
+    go("you");
   }
 
-  function finish() {
-    // The last step can only be reached after choosing a topic.
-    if (area === null) return;
-    if (area === "not_sure" || answer === null) {
-      onFinish({ area, answers: [] });
-      return;
-    }
-    onFinish({ area, answers: [{ question: SELF_QUESTIONS[area].question, answer }] });
+  // Saves the topic and, if there is one, the new answer. Then the next
+  // step: the first moment (introduction) or what Buddy does with it.
+  function tell(chosen: FoodArea, answer: string | null) {
+    const answers = asking !== null && answer !== null ? [{ question: asking.question, answer }] : [];
+    onTell({ area: chosen, answers });
+    setFocus(null);
+    go(mode === "first" ? "bridge" : "use");
   }
+
+  // "1 of 3 answered" next to a topic, so the person sees where there is more to tell.
+  function progress(topic: FoodArea): string | null {
+    if (topic === "not_sure") return null;
+    const all = SELF_QUESTIONS[topic];
+    const done = all.filter((each) => known(each) !== null).length;
+    if (done === 0) return null;
+    return done === all.length ? "Buddy knows this" : `${done} of ${all.length} answered`;
+  }
+  const everythingAnswered = TOPICS.every(
+    (topic) => topic.area === "not_sure" || progress(topic.area) === "Buddy knows this",
+  );
 
   return (
     <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
@@ -90,8 +127,8 @@ export function Onboarding({ mode, seenQuizIds, onQuizSeen, onFinish, onClose }:
         </PressScale>
       </View>
 
-      {/* key={step}: a new step is a new element, so it slides in. */}
-      <Animated.View key={step} entering={FadeInRight.duration(250)} style={styles.step}>
+      {/* key: a new step (or a new question) is a new element, so it slides in. */}
+      <Animated.View key={step + (asking?.question ?? "")} entering={FadeInRight.duration(250)} style={styles.step}>
         {step === "statement" && (
           <>
             <Essence mood="idle" />
@@ -101,7 +138,7 @@ export function Onboarding({ mode, seenQuizIds, onQuizSeen, onFinish, onClose }:
               at a time: less waste, a smaller footprint, and often money saved.
             </Text>
             <Text style={styles.source}>Source: Wood et al. 2002, cited in Linder et al. 2021</Text>
-            <Primary label="Start" onPress={() => setStep("guess")} />
+            <Primary label="Start" onPress={() => go("guess")} />
           </>
         )}
 
@@ -109,11 +146,26 @@ export function Onboarding({ mode, seenQuizIds, onQuizSeen, onFinish, onClose }:
           <>
             <Text style={styles.eyebrow}>Take a guess</Text>
             <Quiz question={quiz} guess={guess} onGuess={makeGuess} />
-            {guess !== null && mode === "first" && <Primary label="Next" onPress={() => setStep("topic")} />}
+            {guess !== null && mode === "first" && <Primary label="Next" onPress={() => go("topic")} />}
             {guess !== null && mode === "again" && (
               <>
-                {/* Two equal ways on: the quiz alone is a complete visit. */}
-                <Primary label="Tell Buddy more about me" onPress={() => setStep("topic")} />
+                {/* Only when a habit can be built on this question. A fact
+                    about a role model, for example, stays a fact. */}
+                {idea !== null && (
+                  <Primary
+                    label="Turn this into a small idea"
+                    onPress={() => {
+                      setFocus(idea);
+                      go("use");
+                    }}
+                  />
+                )}
+                {idea === null ? (
+                  <Primary label="Tell Buddy more about me" onPress={() => go("topic")} />
+                ) : (
+                  <Secondary label="Tell Buddy more about me" onPress={() => go("topic")} />
+                )}
+                {/* The quiz alone is a complete visit. */}
                 <PressScale style={styles.textButton} onPress={onClose} accessibilityRole="button">
                   <Text style={styles.link}>That's enough for today</Text>
                 </PressScale>
@@ -126,17 +178,22 @@ export function Onboarding({ mode, seenQuizIds, onQuizSeen, onFinish, onClose }:
           <>
             <Text style={styles.eyebrow}>Your choice</Text>
             <Text style={styles.question}>What would you like to change around food?</Text>
-            <Text style={styles.source}>Pick the one that matters most to you right now.</Text>
+            <Text style={styles.source}>
+              {everythingAnswered
+                ? "You have answered everything Buddy asks for now. Pick the topic Buddy should work on. You can change your answers there."
+                : "Pick the one that matters most to you right now."}
+            </Text>
             {TOPICS.map((topic) => (
               <PressScale
                 key={topic.area}
-                style={[styles.topic, topic.area === area && styles.topicSelected]}
+                style={[styles.row, topic.area === area && styles.rowSelected]}
                 onPress={() => chooseArea(topic.area)}
                 accessibilityRole="button"
-                accessibilityLabel={topic.label}
+                accessibilityLabel={[topic.label, progress(topic.area)].filter(Boolean).join(", ")}
               >
-                <Text style={styles.topicIcon}>{topic.icon}</Text>
-                <Text style={styles.topicLabel}>{topic.label}</Text>
+                <Text style={styles.rowIcon}>{topic.icon}</Text>
+                <Text style={styles.rowLabel}>{topic.label}</Text>
+                <Text style={styles.rowNote}>{progress(topic.area)}</Text>
               </PressScale>
             ))}
           </>
@@ -149,45 +206,45 @@ export function Onboarding({ mode, seenQuizIds, onQuizSeen, onFinish, onClose }:
               Buddy starts with throwing less away, which saves food and money. You will see what
               fits you as you go.
             </Text>
-            <Primary label="Next" onPress={() => setStep(steps[position + 1])} />
+            <Primary label="Next" onPress={() => tell(area, null)} />
           </>
         )}
 
-        {step === "you" && area !== null && area !== "not_sure" && (
+        {step === "you" && area !== null && area !== "not_sure" && asking !== null && (
           <>
             <Text style={styles.eyebrow}>About you</Text>
-            <Text style={styles.question}>{SELF_QUESTIONS[area].question}</Text>
-            <View style={styles.chips}>
-              {SELF_QUESTIONS[area].options.map((option) => {
-                const selected = ownWords.trim() === "" && option === picked;
-                return (
-                  <PressScale
-                    key={option}
-                    style={[styles.chip, selected && styles.chipSelected]}
-                    onPress={() => {
-                      setPicked(option);
-                      setOwnWords("");
-                    }}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected }}
-                  >
-                    <Text style={[styles.chipLabel, selected && styles.chipLabelSelected]}>{option}</Text>
-                  </PressScale>
-                );
-              })}
-            </View>
-            {/* The options never fit everyone, so the person can always say it their way. */}
-            <TextInput
-              style={styles.input}
-              value={ownWords}
-              onChangeText={setOwnWords}
-              placeholder={SELF_QUESTIONS[area].options.length > 0 ? "Or in your own words" : "In your own words"}
-              placeholderTextColor="#7F8986"
-              maxLength={MAX_ANSWER_LENGTH}
-              accessibilityLabel="Your own answer"
+            {/* The form starts with the earlier answer, if there is one. */}
+            <AnswerForm
+              question={asking}
+              earlier={known(asking)}
+              submitLabel="Next"
+              onSubmit={(answer) => tell(area, answer)}
             />
-            <Text style={styles.source}>Buddy uses your answer to suggest changes that fit you.</Text>
-            {answer !== null && <Primary label="Next" onPress={() => setStep(steps[position + 1])} />}
+          </>
+        )}
+
+        {/* Every question of this topic has an answer: show what Buddy knows.
+            Choosing the topic still counts: Buddy works on it from now on. */}
+        {step === "you" && area !== null && area !== "not_sure" && asking === null && (
+          <>
+            <Text style={styles.eyebrow}>About you</Text>
+            <Text style={styles.question}>Buddy already knows this.</Text>
+            <Text style={styles.source}>Tap an answer to change it.</Text>
+            {SELF_QUESTIONS[area].map((each) => (
+              <PressScale
+                key={each.question}
+                style={styles.row}
+                onPress={() => setAsking(each)}
+                accessibilityRole="button"
+                accessibilityLabel={`${each.question} ${known(each)}. Change`}
+              >
+                <View style={styles.rowText}>
+                  <Text style={styles.rowDetail}>{each.question}</Text>
+                  <Text style={styles.rowLabel}>{known(each)}</Text>
+                </View>
+              </PressScale>
+            ))}
+            <Primary label="Next" onPress={() => tell(area, null)} />
           </>
         )}
 
@@ -198,24 +255,67 @@ export function Onboarding({ mode, seenQuizIds, onQuizSeen, onFinish, onClose }:
               Show Buddy one moment when food happens in your week, like lunch or shopping. Buddy
               answers with one small idea for that moment.
             </Text>
-            <Primary label="Add my first moment" onPress={finish} />
+            <Primary label="Add my first moment" onPress={() => onIdea("new", null)} />
           </>
         )}
 
-        {step === "done" && (
+        {/* What Buddy does with a quiz question or an answer: one small idea
+            at a moment the person picks. Asking is their choice, never a must. */}
+        {step === "use" && (
           <>
-            <Text style={styles.big}>Buddy knows a bit more about you now.</Text>
-            <Text style={styles.body}>
-              Its next ideas will take this into account. Nothing else changes unless you want it to.
+            <Text style={styles.eyebrow}>Buddy's turn</Text>
+            <Text style={styles.question}>
+              {focus === null ? "Buddy can use this right away." : "Where could this fit in your week?"}
             </Text>
-            <Primary label="Back to my food day" onPress={finish} />
+            <Text style={styles.body}>
+              {focus === null
+                ? "Pick a moment. Buddy suggests one small thing there that fits what you told it."
+                : `Pick a moment. Buddy suggests one small thing there about ${focus}.`}
+            </Text>
+            {openChanges >= MAX_OPEN_CHANGES && (
+              <Text style={styles.source}>
+                You already have {openChanges} changes going. Whether one more fits is your call.
+              </Text>
+            )}
+            {freeMoments.map((moment) => (
+              <PressScale
+                key={moment.id}
+                style={styles.row}
+                onPress={() => onIdea(moment, focus)}
+                accessibilityRole="button"
+                accessibilityLabel={`${KIND_LABEL[moment.kind]}, ${PLACE_LABEL[moment.place]}, ${describeDays(moment.days)}`}
+              >
+                <Text style={styles.rowIcon}>{KIND_ICON[moment.kind]}</Text>
+                <View style={styles.rowText}>
+                  <Text style={styles.rowLabel}>{KIND_LABEL[moment.kind]}</Text>
+                  <Text style={styles.rowDetail}>
+                    {PLACE_LABEL[moment.place]} · {describeDays(moment.days)}
+                  </Text>
+                </View>
+              </PressScale>
+            ))}
+            <PressScale
+              style={styles.row}
+              onPress={() => onIdea("new", focus)}
+              accessibilityRole="button"
+              accessibilityLabel="A new moment"
+            >
+              <Text style={styles.rowIcon}>➕</Text>
+              <Text style={styles.rowLabel}>A new moment</Text>
+            </PressScale>
+            <PressScale style={styles.textButton} onPress={onClose} accessibilityRole="button">
+              <Text style={styles.link}>Not now</Text>
+            </PressScale>
+            {focus === null && (
+              <Text style={styles.source}>Either way, Buddy keeps what you told it for its next ideas.</Text>
+            )}
           </>
         )}
 
-        {position > 0 && (
+        {trail.length > 1 && (
           <PressScale
             style={styles.textButton}
-            onPress={() => setStep(steps[position - 1])}
+            onPress={() => setTrail(trail.slice(0, -1))}
             accessibilityRole="button"
           >
             <Text style={styles.link}>{step === "you" ? "Choose another topic" : "Back"}</Text>
@@ -230,6 +330,14 @@ function Primary({ label, onPress }: { label: string; onPress: () => void }) {
   return (
     <PressScale style={styles.primary} onPress={onPress} accessibilityRole="button">
       <Text style={styles.primaryLabel}>{label}</Text>
+    </PressScale>
+  );
+}
+
+function Secondary({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <PressScale style={styles.secondary} onPress={onPress} accessibilityRole="button">
+      <Text style={styles.secondaryLabel}>{label}</Text>
     </PressScale>
   );
 }
@@ -255,17 +363,17 @@ const styles = StyleSheet.create({
   body: { fontSize: 16, lineHeight: 24 },
   source: { fontSize: 13, lineHeight: 18, opacity: 0.6 },
 
-  topic: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, borderRadius: 16, borderWidth: 1, borderColor: LINE, backgroundColor: "#FFFFFF" },
-  topicSelected: { borderColor: GREEN, backgroundColor: PALE_GREEN },
-  topicIcon: { fontSize: 22 },
-  topicLabel: { fontSize: 16, fontWeight: "600", flexShrink: 1 },
-  chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  chip: { minHeight: 48, minWidth: 64, alignItems: "center", justifyContent: "center", paddingHorizontal: 18, paddingVertical: 8, borderRadius: 24, borderWidth: 1, borderColor: LINE, backgroundColor: "#FFFFFF" },
-  chipSelected: { backgroundColor: GREEN, borderColor: GREEN },
-  chipLabel: { fontSize: 16, fontWeight: "600" },
-  chipLabelSelected: { color: "#FFFFFF" },
-  input: { minHeight: 48, borderWidth: 1, borderColor: LINE, borderRadius: 12, paddingHorizontal: 16, fontSize: 16, backgroundColor: "#FFFFFF" },
+  // A row to tap: a topic, an answer Buddy knows, or a moment.
+  row: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16, borderWidth: 1, borderColor: LINE, backgroundColor: "#FFFFFF" },
+  rowSelected: { borderColor: GREEN, backgroundColor: PALE_GREEN },
+  rowIcon: { fontSize: 22 },
+  rowText: { flex: 1, gap: 2 },
+  rowLabel: { fontSize: 16, fontWeight: "600", flexShrink: 1 },
+  rowDetail: { fontSize: 14, lineHeight: 20, opacity: 0.6 },
+  rowNote: { fontSize: 13, color: GREEN, fontWeight: "600", marginLeft: "auto" },
 
   primary: { backgroundColor: GREEN, borderRadius: 12, padding: 16, alignItems: "center", marginTop: 8 },
   primaryLabel: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
+  secondary: { borderRadius: 12, padding: 16, alignItems: "center", borderWidth: 1, borderColor: GREEN },
+  secondaryLabel: { color: GREEN, fontSize: 16, fontWeight: "600" },
 });

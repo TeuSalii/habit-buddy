@@ -11,9 +11,10 @@ export async function offerForMoment(
   moment: MomentDetails,
   about: FoodProfile | null,
   declined: string[],
+  focus: string | null,
   rules: string,
 ): Promise<OfferResponse> {
-  const input = offerInput(moment, about, declined);
+  const input = offerInput(moment, about, declined, focus);
 
   const text = await MODELS[id].generate(rules, [{ role: "user", content: input }]);
   const output = JSON.parse(text) as ModelOutput;

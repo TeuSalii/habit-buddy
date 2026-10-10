@@ -5,7 +5,12 @@ import type { FoodProfile } from "@/shared/offer";
 // describes it. One function builds it everywhere (the app's offer, the
 // lab, and the approved examples in the rule sheet), so the model always
 // sees the same shape.
-export function offerInput(moment: MomentDetails, about: FoodProfile | null, declined: string[]): string {
+export function offerInput(
+  moment: MomentDetails,
+  about: FoodProfile | null,
+  declined: string[],
+  focus: string | null,
+): string {
   // We pick the fields ourselves instead of passing the objects through:
   // the model sees exactly what rule 7 describes, and nothing else.
   const { kind, slot, place, days } = moment;
@@ -16,5 +21,6 @@ export function offerInput(moment: MomentDetails, about: FoodProfile | null, dec
         ? null
         : { area: about.area, answers: about.answers.map(({ question, answer }) => ({ question, answer })) },
     declined,
+    focus,
   });
 }

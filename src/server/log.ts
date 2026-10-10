@@ -32,6 +32,7 @@ export type LogEvent =
       moment: FoodMoment;
       about: FoodProfile | null;
       declined: string[];
+      focus: string | null;
       result: OfferResponse;
     }
   // A check-off under a plan: this person did (done) or un-ticked (not done)

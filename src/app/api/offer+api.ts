@@ -2,14 +2,14 @@ import { appendLog } from "@/server/log";
 import { MODELS } from "@/server/models/registry";
 import { offerForMoment } from "@/server/offer-for-moment";
 import { loadOfferRuleSheet } from "@/server/rule-sheet";
-import { isFoodProfile, isId, isMoment, isTextList } from "@/server/validate";
-import { MAX_DECLINED, type OfferRequest } from "@/shared/offer";
+import { isFoodProfile, isId, isMoment, isText, isTextList } from "@/server/validate";
+import { MAX_DECLINED, MAX_FOCUS_LENGTH, type OfferRequest } from "@/shared/offer";
 import { MODEL_IDS } from "@/shared/tiny-habit";
 
 // POST /api/offer  body: OfferRequest  →  OfferResponse
 // Runs on the server only. The app never sees the API key.
 export async function POST(request: Request) {
-  const { userId, model, moment, about, declined } = (await request.json()) as OfferRequest;
+  const { userId, model, moment, about, declined, focus } = (await request.json()) as OfferRequest;
 
   if (!isId(userId)) {
     return Response.json({ error: "userId must be a short text" }, { status: 400 });
@@ -27,9 +27,13 @@ export async function POST(request: Request) {
     return Response.json({ error: `declined must be a list of at most ${MAX_DECLINED} short texts` }, { status: 400 });
   }
 
+  if (focus !== null && !isText(focus, MAX_FOCUS_LENGTH)) {
+    return Response.json({ error: "focus must be null or a short text" }, { status: 400 });
+  }
+
   // The rules, plus the offers approved in the lab.
   const rules = await loadOfferRuleSheet();
-  const result = await offerForMoment(model, moment, about, declined, rules.text);
+  const result = await offerForMoment(model, moment, about, declined, focus, rules.text);
   await appendLog({
     type: "offer",
     at: new Date().toISOString(),
@@ -39,6 +43,7 @@ export async function POST(request: Request) {
     moment,
     about,
     declined,
+    focus,
     result,
   });
 

@@ -22,7 +22,7 @@ export async function suggestOffers(
   rules: string,
 ): Promise<LabSuggestions> {
   const text = await MODELS[id].generate(`${rules}\n\n${LAB_INSTRUCTION}`, [
-    { role: "user", content: offerInput(moment, about, avoid) },
+    { role: "user", content: offerInput(moment, about, avoid, null) },
   ]);
   const output = JSON.parse(text) as ModelOutput;
 

@@ -49,7 +49,7 @@ export function approvedSection(approved: ApprovedOffer[]): string {
   if (approved.length === 0) return "";
   const examples = approved.slice(-MAX_IN_RULE_SHEET).map((each) => {
     const reply = JSON.stringify({ move: "propose", message: "", tinyHabits: [each.habit] });
-    return `Input: ${offerInput(each.moment, each.about, [])}\nBuddy: ${reply}`;
+    return `Input: ${offerInput(each.moment, each.about, [], null)}\nBuddy: ${reply}`;
   });
   return [
     "# 8 · Approved offers",

@@ -17,7 +17,7 @@ export type SelfAnswer = { question: string; answer: string };
 // can be added over time without changing this shape.
 export type FoodProfile = { area: FoodArea; answers: SelfAnswer[] };
 
-export const MAX_ANSWERS = 10;
+export const MAX_ANSWERS = 20;
 export const MAX_ANSWER_LENGTH = 200;
 
 export type OfferRequest = {
@@ -29,7 +29,11 @@ export type OfferRequest = {
   // Behaviors the person already turned down for this moment,
   // so Buddy offers something different.
   declined: string[];
+  // A theme the person asked an idea about (from a quiz question), or null.
+  focus: string | null;
 };
+
+export const MAX_FOCUS_LENGTH = 200;
 
 // Buddy either offers a tiny habit, or says that this is not something it
 // can help with (the scope rules in rules/5-guardrails.md).

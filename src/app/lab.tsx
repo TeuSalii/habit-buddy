@@ -181,10 +181,11 @@ export default function Lab() {
           />
         </View>
       </Section>
+      {/* The statement holds one answer: to the topic's first question. */}
       {topic !== null && topic !== "skipped" && topic !== "not_sure" && (
-        <Section title={`Their answer to "${SELF_QUESTIONS[topic].question}" (optional)`}>
+        <Section title={`Their answer to "${SELF_QUESTIONS[topic][0].question}" (optional)`}>
           <View style={styles.chips}>
-            {SELF_QUESTIONS[topic].options.map((option) => (
+            {SELF_QUESTIONS[topic][0].options.map((option) => (
               <Chip key={option} label={option} selected={option === answer} onPress={() => changeStatement(() => setAnswer(option))} />
             ))}
           </View>
@@ -283,7 +284,7 @@ export default function Lab() {
 function toProfile(topic: TopicChoice, answer: string): FoodProfile | null {
   if (topic === "skipped") return null;
   if (topic === "not_sure" || answer.trim() === "") return { area: topic, answers: [] };
-  return { area: topic, answers: [{ question: SELF_QUESTIONS[topic].question, answer: answer.trim() }] };
+  return { area: topic, answers: [{ question: SELF_QUESTIONS[topic][0].question, answer: answer.trim() }] };
 }
 
 async function post<Body, Result>(url: string, body: Body): Promise<Result> {

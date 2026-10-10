@@ -1,21 +1,28 @@
 import { ImageBackground, StyleSheet, Text, View } from "react-native";
 
 import { PressScale } from "@/components/press-scale";
-import { TOPICS } from "@/content/self-questions";
+import { TOPICS, questionFor } from "@/content/self-questions";
 import type { FoodProfile } from "@/shared/offer";
 
 // The card at the top of the day map: a picture as its header, with the
 // title on it (the look of a "card with image header"). It says where the
-// person stands with Buddy, shows what Buddy knows about them, and opens the
-// quiz again. The quiz is an invitation, never a task.
+// person stands with Buddy, sums up what Buddy knows about them, and opens
+// the quiz again. The quiz is an invitation, never a task.
+
+// The card shows this many answers, the newest first. The rest is one tap
+// away: a summary that lists everything is no summary.
+const SHOWN = 3;
 
 type Props = {
   about: FoodProfile | null;
   onTakeQuiz: () => void;
+  onShowKnown: () => void; // everything Buddy knows, with the way to change it
 };
 
-export function HereCard({ about, onTakeQuiz }: Props) {
-  const latest = about === null ? undefined : about.answers[about.answers.length - 1];
+export function HereCard({ about, onTakeQuiz, onShowKnown }: Props) {
+  const answers = about?.answers ?? [];
+  const newest = answers.slice(-SHOWN).reverse();
+  const more = answers.length - newest.length;
 
   return (
     <View style={styles.card}>
@@ -29,12 +36,25 @@ export function HereCard({ about, onTakeQuiz }: Props) {
       </ImageBackground>
 
       <View style={styles.body}>
-        {latest !== undefined && (
-          <View>
-            <Text style={styles.known}>Buddy knows · {latest.question}</Text>
-            <Text style={styles.answer}>{latest.answer}</Text>
-          </View>
-        )}
+        <View style={styles.summary}>
+          <Text style={styles.known}>What Buddy knows about you</Text>
+          {answers.length === 0 && <Text style={styles.line}>Nothing yet.</Text>}
+          {newest.map((each) => (
+            // The question in a few words, then the answer. Two lines at most,
+            // so a long answer in the person's own words cannot fill the card.
+            <Text key={each.question} style={styles.line} numberOfLines={2}>
+              <Text style={styles.label}>{questionFor(each.question).short}: </Text>
+              {each.answer}
+            </Text>
+          ))}
+          {more > 0 && <Text style={styles.known}>and {more} more</Text>}
+          {/* Only once the person told Buddy something is there anything to change. */}
+          {about !== null && (
+            <PressScale style={styles.textButton} onPress={onShowKnown} accessibilityRole="button">
+              <Text style={styles.link}>See all and change</Text>
+            </PressScale>
+          )}
+        </View>
         <Text style={styles.text}>
           Take a quiz whenever you feel like it. It can be just for fun, or a way to tell Buddy
           more about you. It never has to end in a new plan.
@@ -66,8 +86,12 @@ const styles = StyleSheet.create({
   eyebrow: { color: "#FFFFFF", fontSize: 12, fontWeight: "600", textTransform: "uppercase", letterSpacing: 0.5, opacity: 0.9 },
   title: { color: "#FFFFFF", fontSize: 22, lineHeight: 28, fontWeight: "600" },
   body: { padding: 16, gap: 12 },
+  summary: { gap: 4 },
   known: { fontSize: 13, lineHeight: 18, opacity: 0.6 },
-  answer: { fontSize: 16, lineHeight: 22, fontWeight: "600" },
+  line: { fontSize: 15, lineHeight: 22, fontWeight: "600" },
+  label: { fontWeight: "400", opacity: 0.7 },
+  textButton: { minHeight: 48, justifyContent: "center", alignSelf: "flex-start" },
+  link: { color: GREEN, fontSize: 16, fontWeight: "600" },
   text: { fontSize: 14, lineHeight: 20, opacity: 0.8 },
   // 48 is the smallest height Android recommends for something you tap.
   button: { minHeight: 48, justifyContent: "center", alignItems: "center", alignSelf: "flex-start", paddingHorizontal: 20, borderRadius: 12, borderWidth: 1, borderColor: GREEN },

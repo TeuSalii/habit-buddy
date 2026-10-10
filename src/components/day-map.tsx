@@ -1,5 +1,4 @@
 import { Link } from "expo-router";
-import { useState } from "react";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import Animated, { LinearTransition } from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -7,23 +6,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Essence } from "@/components/essence";
 import { FoodMomentForm } from "@/components/food-moment-form";
 import { SLOT_LABEL } from "@/components/food-moment-labels";
+import { type Change, MAX_OPEN_CHANGES, askBuddy, openChangesIn, setBuddyFor } from "@/client/ask-buddy";
 import { HereCard } from "@/components/here-card";
 import { MomentCard } from "@/components/moment-card";
 import { PressScale } from "@/components/press-scale";
 import type { CheckinRequest } from "@/shared/checkin";
 import { type FoodMoment, SLOTS } from "@/shared/food-moment";
-import type { OfferRequest, OfferResponse } from "@/shared/offer";
-import type { ModelId } from "@/shared/tiny-habit";
 import { datesOfWeek, toDateText } from "@/shared/week";
-import type { BuddyState, SavedState } from "@/storage/saved-state";
-
-// The model that makes Buddy's offers. The lab can switch models; the
-// product uses one.
-const OFFER_MODEL: ModelId = "claude";
-
-// Buddy offers by itself only while fewer than this many changes are open.
-// Starting many habits at once is how none of them sticks.
-const MAX_OPEN_CHANGES = 2;
+import type { SavedState } from "@/storage/saved-state";
 
 // The day map. The person adds the moments when food happens in their week,
 // Buddy offers one tiny habit for a moment, and an accepted plan can be
@@ -33,34 +23,41 @@ const MAX_OPEN_CHANGES = 2;
 // asks for changes through `change`. The owner (the home screen) stores
 // every change on the phone.
 
+// Why the "add a food moment" form is open. "map": the person tapped the
+// button on the map. "idea": they came from the quiz and asked for an idea
+// at a new moment, maybe on the theme of the quiz question (focus).
+export type Adding = { reason: "map" } | { reason: "idea"; focus: string | null };
+
 type Props = {
   state: SavedState;
-  // `update` gets the newest state and returns the changed one. Using the
-  // newest state matters here, because Buddy's answer arrives later, when
-  // other things may already have changed.
-  change: (update: (current: SavedState) => SavedState) => void;
-  startAdding: boolean; // open the "add a food moment" form right away
+  change: Change;
+  adding: Adding | null; // null: the form is closed
+  setAdding: (next: Adding | null) => void;
   onTakeQuiz: () => void;
+  onShowKnown: () => void;
+  onChangeUser: () => void; // opens the list of people on this phone
 };
 
-export function DayMap({ state, change, startAdding, onTakeQuiz }: Props) {
-  const { moments, buddy, checks, about, userId } = state;
-  const [adding, setAdding] = useState(startAdding);
+export function DayMap({ state, change, adding, setAdding, onTakeQuiz, onShowKnown, onChangeUser }: Props) {
+  const { moments, buddy, checks, about, userId, name } = state;
 
   const now = new Date();
   const today = toDateText(now);
   const week = datesOfWeek(now);
 
-  const openChanges = Object.values(buddy).filter(
-    (each) => each.status === "thinking" || each.status === "offered" || each.status === "accepted",
-  ).length;
+  function ask(moment: FoodMoment, declined: string[], focus: string | null) {
+    askBuddy(change, { userId, about, moment, declined, focus });
+  }
 
   function add(details: Omit<FoodMoment, "id">) {
     const moment = { ...details, id: Date.now().toString() };
     change((current) => ({ ...current, moments: [...current.moments, moment] }));
-    setAdding(false);
-    // The payoff comes right away: Buddy looks at the new moment.
-    if (openChanges < MAX_OPEN_CHANGES) askBuddy(moment, []);
+    setAdding(null);
+    // The payoff comes right away: Buddy looks at the new moment. Coming
+    // from the quiz, the person asked for it. Otherwise Buddy offers only
+    // while fewer than two changes are open.
+    if (adding?.reason === "idea") ask(moment, [], adding.focus);
+    else if (openChangesIn(buddy) < MAX_OPEN_CHANGES) ask(moment, [], null);
   }
 
   function remove(id: string) {
@@ -76,46 +73,17 @@ export function DayMap({ state, change, startAdding, onTakeQuiz }: Props) {
     });
   }
 
-  // Sets Buddy's state for one moment, unless the moment was removed in the
-  // meantime (an answer can arrive after the person tapped "Remove").
-  function setBuddyFor(id: string, next: BuddyState, mustExist: boolean) {
-    change((current) =>
-      mustExist && current.buddy[id] === undefined
-        ? current
-        : { ...current, buddy: { ...current.buddy, [id]: next } },
-    );
-  }
-
-  async function askBuddy(moment: FoodMoment, declined: string[]) {
-    setBuddyFor(moment.id, { status: "thinking", declined }, false);
-    try {
-      const response = await postOffer({ userId, model: OFFER_MODEL, moment, about, declined });
-      setBuddyFor(
-        moment.id,
-        response.kind === "offer"
-          ? { status: "offered", habit: response.offer, declined }
-          : { status: "outOfScope", message: response.message },
-        true,
-      );
-    } catch (error) {
-      // The server being unreachable is a normal thing to happen on a phone,
-      // so the card says so and offers "Try again". The detail goes to the log.
-      console.error(error);
-      setBuddyFor(moment.id, { status: "failed", declined }, true);
-    }
-  }
-
   function accept(id: string) {
     const current = buddy[id];
     if (current?.status !== "offered") return;
-    setBuddyFor(id, { status: "accepted", habit: current.habit }, true);
+    setBuddyFor(change, id, { status: "accepted", habit: current.habit }, true);
   }
 
   function decline(id: string) {
     const current = buddy[id];
     if (current?.status !== "offered") return;
     // Remember what was turned down, so the next idea is a different one.
-    setBuddyFor(id, { status: "declined", declined: [...current.declined, current.habit.behavior] }, true);
+    setBuddyFor(change, id, { status: "declined", declined: [...current.declined, current.habit.behavior] }, true);
   }
 
   // "Another idea" or "Try again": the person asks, so the limit of two
@@ -123,7 +91,7 @@ export function DayMap({ state, change, startAdding, onTakeQuiz }: Props) {
   function askAgain(moment: FoodMoment) {
     const current = buddy[moment.id];
     if (current?.status !== "declined" && current?.status !== "failed") return;
-    askBuddy(moment, current.declined);
+    ask(moment, current.declined, null);
   }
 
   // Ticks or un-ticks one day of a plan. The phone is the record the person
@@ -147,7 +115,21 @@ export function DayMap({ state, change, startAdding, onTakeQuiz }: Props) {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <HereCard about={about} onTakeQuiz={onTakeQuiz} />
+      {/* Who is using the app right now, and the way to become someone
+          else. It is here for testing with different people in mind. */}
+      <PressScale
+        style={styles.user}
+        onPress={onChangeUser}
+        accessibilityRole="button"
+        accessibilityLabel={`${name}. Change user`}
+      >
+        <Text style={styles.userName} numberOfLines={1}>
+          👤 {name}
+        </Text>
+        <Text style={styles.userLink}>Change user</Text>
+      </PressScale>
+
+      <HereCard about={about} onTakeQuiz={onTakeQuiz} onShowKnown={onShowKnown} />
 
       {moments.length === 0 ? (
         <>
@@ -199,7 +181,7 @@ export function DayMap({ state, change, startAdding, onTakeQuiz }: Props) {
       )}
 
       <Animated.View layout={LinearTransition} style={styles.actions}>
-        <PressScale style={styles.button} onPress={() => setAdding(true)} accessibilityRole="button">
+        <PressScale style={styles.button} onPress={() => setAdding({ reason: "map" })} accessibilityRole="button">
           <Text style={styles.buttonLabel}>Add a food moment</Text>
         </PressScale>
         {/* For developers: the lab where Buddy's suggestions are reviewed. */}
@@ -213,25 +195,13 @@ export function DayMap({ state, change, startAdding, onTakeQuiz }: Props) {
       {/* A Modal covers the screen and closes with Android's back gesture
           (onRequestClose). While it is hidden, the form inside does not exist,
           so every time it opens the form starts empty. */}
-      <Modal visible={adding} animationType="slide" onRequestClose={() => setAdding(false)}>
+      <Modal visible={adding !== null} animationType="slide" onRequestClose={() => setAdding(null)}>
         <SafeAreaView style={styles.modal}>
-          <FoodMomentForm onSave={add} onCancel={() => setAdding(false)} />
+          <FoodMomentForm onSave={add} onCancel={() => setAdding(null)} />
         </SafeAreaView>
       </Modal>
     </ScrollView>
   );
-}
-
-async function postOffer(body: OfferRequest): Promise<OfferResponse> {
-  const response = await fetch("/api/offer", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    throw new Error(`/api/offer failed (${response.status}): ${await response.text()}`);
-  }
-  return response.json();
 }
 
 async function postCheckin(body: CheckinRequest) {
@@ -262,5 +232,9 @@ const styles = StyleSheet.create({
   buttonLabel: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
   secondaryButton: { borderRadius: 12, padding: 16, alignItems: "center", borderWidth: 1, borderColor: "#1F6F5C" },
   secondaryLabel: { color: "#1F6F5C", fontSize: 16, fontWeight: "600" },
+  // 48 is the smallest height Android recommends for something you tap.
+  user: { minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  userName: { fontSize: 16, fontWeight: "600", flexShrink: 1 },
+  userLink: { color: "#1F6F5C", fontSize: 16, fontWeight: "600" },
   modal: { flex: 1, backgroundColor: "#FFFFFF" },
 });
